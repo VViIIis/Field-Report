@@ -144,6 +144,10 @@ td input{font:inherit;font-size:13.5px;width:76px;text-align:right;padding:3px 6
 .preview-pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted);vertical-align:6px;margin-left:10px;font-weight:500}
 .ghost-card{opacity:.9}
 .gline{height:10px;border-radius:5px;background:var(--line)}
+.names{display:grid}
+.names-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:10px 16px}
+.names-grid label{display:grid;gap:4px;font-size:13px}
+.names-grid input{font:inherit;font-size:14px;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}
 details{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 16px}
 summary{cursor:pointer;font-weight:600}
 footer{font-size:13px;color:var(--muted);display:grid;gap:4px}
@@ -319,7 +323,7 @@ function analyze(input, user){
       const stackBucket=s=>s?Math.min(3,s.mates):null;
       const shapeDist=arr=>{ const d=[0,0,0,0]; let n=0, bb=0; arr.forEach(f=>{ const b=stackBucket(f.sh); if(b==null) return; d[b]++; n++; if(f.sh.bb>0) bb++; }); return n?{d:d.map(x=>100*x/n), bb:100*bb/n, n}:null; };
       const fieldSample = F.length>20000 ? F.filter((_,j)=>j%Math.ceil(F.length/20000)===0) : F;
-      const C={id:String(c.id), slate:sid, name: hC&&hC.name ? hC.name : `${N.toLocaleString()}-entry contest`, N, showdown:c.showdown, winScore:c.rows[0].pts, top1Line:c.rows[k1-1].pts, medScore:median(c.rows.map(r=>r.pts)), cashLine: placesPaid && c.rows[placesPaid-1] ? c.rows[placesPaid-1].pts : null, placesPaid,
+      const C={id:String(c.id), slate:sid, name: hC&&hC.name ? hC.name : `${N.toLocaleString()}-entry contest`, unnamed: !(hC&&hC.name), N, showdown:c.showdown, winScore:c.rows[0].pts, top1Line:c.rows[k1-1].pts, medScore:median(c.rows.map(r=>r.pts)), cashLine: placesPaid && c.rows[placesPaid-1] ? c.rows[placesPaid-1].pts : null, placesPaid,
         fieldOwnMed:median(owns), top1OwnMed:median(top.map(f=>f.o)), fieldShape:shapeDist(fieldSample), top1Shape:shapeDist(top),
         top1ProjPct: projs.length? top.filter(f=>f.pj!=null).reduce((s,f)=>s+projPct(f.pj),0)/Math.max(1,top.filter(f=>f.pj!=null).length) : null,
         top1LessOwned: median(top.map(f=>f.o)) < median(owns),
@@ -365,7 +369,7 @@ let FILES=[];            // {name, kind, text}
 let PARSED=null;          // {contests, history, slates}
 let RESULT=null;
 let EDITS=LS.get('fr.edits',{});   // entryId -> {fee, won}
-let CANDS=new Set(); let SLATE='all'; let INCLUDE_CASH=LS.get('fr.cash',false);
+let CANDS=new Set(); let SLATE='all'; let NAMES=LS.get('fr.names',{}); let INCLUDE_CASH=LS.get('fr.cash',false);
 const isCashGame=n=>/double\s*up|50\s*\/\s*50|fifty|triple\s*up|quintuple|head[\s-]*to[\s-]*head|\bh2h\b|cash game/i.test(n||'');
 
 async function ingest(fileList){
@@ -383,7 +387,7 @@ async function rebuild(keepUser){
   renderChips();
   const std=FILES.filter(f=>f.kind==='standings');
   if(!std.length){ $('progress').textContent= FILES.length? 'Add at least one contest standings file to build a report.' : ''; return; }
-  const contests=[]; for(let i=0;i<std.length;i++){ $('progress').textContent=`Parsing ${i+1} of ${std.length} contests…`; await new Promise(r=>setTimeout(r,0)); contests.push(parseStandings(std[i].text, std[i].name)); }
+  const contests=[]; for(let i=0;i<std.length;i++){ $('progress').textContent=`Parsing ${i+1} of ${std.length} contests…`; await new Promise(r=>setTimeout(r,0)); const c=parseStandings(std[i].text, std[i].name); if(!contests.some(x=>x.id===c.id)) contests.push(c); }
   PARSED={contests, history:FILES.filter(f=>f.kind==='history').map(f=>parseHistory(f.text)), slates:FILES.filter(f=>f.kind==='slate').map(f=>parseSlate(f.text))};
   const cands=candidateUsers(contests); CANDS=new Set(cands.map(c=>c.name)); const saved=LS.get('fr.user',null);
   $('userList').innerHTML=cands.map(c=>`<option value="${esc(c.name)}"></option>`).join('');
@@ -471,7 +475,7 @@ function withEdits(R){ const E=R.entries.map(e=>{ const ed=EDITS[e.id]; return {
 function render(){ lastW=$('report').clientWidth;
   $('sampleBanner').hidden=!!RESULT; if(!RESULT && !PARSED) $('sampleBanner').textContent='Below is a preview of your report. Upload your files above to fill it in.'; renderChips();
   if(!RESULT){ $('slateWrap').hidden=true; $('cashWrap').hidden=true; renderSkeleton(); return; }
-  const R0=RESULT; const cashIds=new Set(R0.contests.filter(c=>isCashGame(c.name)).map(c=>c.id));
+  const R0={...RESULT, contests:RESULT.contests.map(c=>NAMES[c.id]?{...c,name:NAMES[c.id],named:true}:c)}; const cashIds=new Set(R0.contests.filter(c=>isCashGame(c.name)).map(c=>c.id));
   $('cashWrap').hidden=!cashIds.size; $('cashLbl').textContent=`Include cash games (${R0.entries.filter(e=>cashIds.has(e.cid)).length})`; $('cashChk').checked=INCLUDE_CASH;
   let E=withEdits(R0).filter(e=>INCLUDE_CASH||!cashIds.has(e.cid));
   const slOpts=R0.slates.filter(sl=>E.some(e=>e.slate===sl.id)); if(SLATE!=='all' && !slOpts.some(sl=>sl.id===SLATE)) SLATE='all';
@@ -488,6 +492,12 @@ function render(){ lastW=$('report').clientWidth;
   const fees=E.reduce((s,e)=>s+(e.fee||0),0), won=E.reduce((s,e)=>s+(e.won||0),0);
   const pcts=E.map(e=>e.pct); const med=median(pcts); const top10=E.filter(e=>e.pct<=10).length, top1=E.filter(e=>e.pct<=1).length;
   const best=[...E].sort((a,b)=>a.pct-b.pct)[0]; const cashKnown=E.filter(e=>e.cashed!=null), cashed=cashKnown.filter(e=>e.cashed).length;
+  /* contest names (standings files don't carry them) */
+  { const un=R0.contests.filter(c=>c.unnamed||c.named); if(un.length){ const d=document.createElement('details'); d.className='names'; d.open=R0.contests.some(c=>c.unnamed&&!c.named);
+    d.innerHTML=`<summary>Contest names <span class="dim" style="font-weight:400">(${un.filter(c=>c.named).length} of ${un.length} named)</span></summary><p class="dim" style="font-size:14px;margin:8px 0 12px">DraftKings' standings files don't include contest names. Add your entry history to fill them in automatically, or type them here. Naming one "Double Up" or "50/50" moves it to cash games.</p><div class="names-grid">${un.map(c=>`<label for="nm-${esc(c.id)}"><span class="dim">#${esc(c.id)} · ${c.N.toLocaleString()} entries</span><input id="nm-${esc(c.id)}" data-id="${esc(c.id)}" value="${esc(NAMES[c.id]||'')}" placeholder="e.g. $400K Spy, Milly Maker"></label>`).join('')}</div>`;
+    $('report').appendChild(d);
+    d.querySelectorAll('input[data-id]').forEach(inp=>inp.addEventListener('change',()=>{ const v=inp.value.trim(); if(v) NAMES[inp.dataset.id]=v; else delete NAMES[inp.dataset.id]; LS.set('fr.names',NAMES); render(); const d2=$('report').querySelector('details.names'); if(d2) d2.open=true; }));
+  } }
   /* tiles */
   const tiles=document.createElement('div'); tiles.className='tiles'; rep.appendChild(tiles);
   const T=[];
