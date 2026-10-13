@@ -244,13 +244,25 @@ function parseHistory(text){
 function parseSlate(text){
   const L=csvLines(text); const raw=splitCSV(L[0]); const head=raw.map(norm); const ix=(...ks)=>{ for(const k of ks){ const i=head.indexOf(k); if(i>=0) return i; } return -1; };
   const iN=ix('name','player','playername'), iT=ix('teamabbrev','team'), iO=ix('opp','opponent'), iG=ix('gameinfo','game'), iS=ix('dksalary','salary'), iPj=ix('dkproj','proj','projection','projectedpoints','fpts','projpts'), iPos=ix('dkpos','position','pos');
-  const m=new Map();
+  const m=new Map(), dcount=new Map();
   for(let k=1;k<L.length;k++){ if(!L[k]) continue; const c=splitCSV(L[k]); const n=(c[iN]||'').trim(); if(!n) continue;
+    if(iG>=0){ const dm=(c[iG]||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); if(dm){ const key=`${dm[3]}-${dm[1].padStart(2,'0')}-${dm[2].padStart(2,'0')}`; dcount.set(key,(dcount.get(key)||0)+1); } }
     const team=(c[iT]||'').trim().toUpperCase(); let opp=iO>=0?(c[iO]||'').replace('@','').trim().toUpperCase():'';
     if(!opp && iG>=0){ const g=(c[iG]||'').match(/([A-Z]{2,4})@([A-Z]{2,4})/); if(g) opp = g[1]===team ? g[2] : g[1]; }
     m.set(n,{team,opp,sal:iS>=0?money(c[iS]):null,proj:iPj>=0?parseFloat(c[iPj]):null,pos:iPos>=0?c[iPos]:null}); }
   const hasProj = iPj>=0 && [...m.values()].some(p=>p.proj>0);
-  return {players:m, hasProj, hasSal:[...m.values()].some(p=>p.sal>0), hasTeams:[...m.values()].some(p=>p.team&&p.opp)};
+  const topDate=[...dcount.entries()].sort((a,b)=>b[1]-a[1])[0];
+  return {players:m, date: topDate? new Date(topDate[0]+'T12:00:00') : null, hasProj, hasSal:[...m.values()].some(p=>p.sal>0), hasTeams:[...m.values()].some(p=>p.team&&p.opp)};
+}
+// DraftKings contest IDs climb steadily (~250K a week during the NFL season), so a standings file's ID pins
+// its slate date when no entry history or salary file is uploaded. Anchors: 2026 main-slate Spy contests.
+const ID_ANCHORS=[[193028236,'2026-09-13'],[195661320,'2026-09-20'],[195921932,'2026-09-27'],[196169727,'2026-10-04'],[196420146,'2026-10-11']];
+function dateFromContestId(id){
+  id=+id; if(!id) return null; const A=ID_ANCHORS.map(([i,d])=>[i,new Date(d+'T12:00:00').getTime()]); const WEEK=7*864e5, PER=250000;
+  if(id<A[0][0]-1500000 || id>A[A.length-1][0]+PER*24) return null;
+  let t; if(id<=A[0][0]) t=A[0][1]-(A[0][0]-id)/PER*WEEK; else if(id>=A[A.length-1][0]) t=A[A.length-1][1]+(id-A[A.length-1][0])/PER*WEEK;
+  else { for(let k=1;k<A.length;k++) if(id<=A[k][0]){ const f=(id-A[k-1][0])/(A[k][0]-A[k-1][0]); t=A[k-1][1]+f*(A[k][1]-A[k-1][1]); break; } }
+  const d=new Date(t); const dow=d.getDay(); const toSun=dow===0?0:(dow>=4?7-dow:-dow); d.setDate(d.getDate()+toSun); d.setHours(12,0,0,0); return d;
 }
 function candidateUsers(contests){
   const cnt=new Map(); contests.forEach(c=>{ const seen=new Set(c.rows.map(r=>r.name)); seen.forEach(n=>cnt.set(n,(cnt.get(n)||0)+1)); });
@@ -281,16 +293,19 @@ function analyze(input, user){
       if(cov>bestCov){ bestCov=cov; best=s; } });
     const dates=idx.map(i=>{ const h=H.byContest.get(String(contests[i].id)); return h&&h.date?new Date(h.date):null; }).filter(d=>d&&!isNaN(d));
     const minId=Math.min(...idx.map(i=>parseInt(contests[i].id)||0));
-    return {idx, slate: bestCov>=0.8?best:null, date: dates.length?new Date(Math.min(...dates)):null, minId}; })
+    const sl=bestCov>=0.8?best:null;
+    // Date: entry history first, then the salary file's game dates, then an estimate from the contest ID.
+    const date = dates.length ? new Date(Math.min(...dates)) : (sl&&sl.date) ? sl.date : dateFromContestId(minId);
+    return {idx, slate: sl, date, minId, est: !dates.length && !(sl&&sl.date) && !!date}; })
     .sort((a,b)=> (a.date&&b.date) ? a.date-b.date : a.minId-b.minId);
-  const fmtDate=d=>d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  const fmtDate=d=>(d.getMonth()+1)+'/'+d.getDate();
   // NFL week from the contest date: Week 1 starts the Tuesday before the Thursday after Labor Day.
   const nflWeek=d=>{ if(!d) return null; let y=d.getFullYear(); if(d.getMonth()<2) y--; const lab=new Date(y,8,1); while(lab.getDay()!==1) lab.setDate(lab.getDate()+1); const start=new Date(y,8,lab.getDate()+1);
     const wk=Math.floor((d-start)/864e5/7)+1; return wk>=1&&wk<=22?wk:null; };
   const outSlates=[], outContests=[], outEntries=[];
   slateList.forEach((g,si)=>{
-    const wk=nflWeek(g.date); const label = wk ? 'Week '+wk : g.date ? fmtDate(g.date) : 'Slate '+(si+1);
-    const sid='s'+si; outSlates.push({id:sid,label,week:wk,date:g.date?fmtDate(g.date):null,hasTeams:!!(g.slate&&g.slate.hasTeams),hasProj:!!(g.slate&&g.slate.hasProj),showdown:contests[g.idx[0]].showdown});
+    const wk=nflWeek(g.date); const label = wk ? `Week ${wk} · ${fmtDate(g.date)}` : g.date ? fmtDate(g.date) : 'Slate '+(si+1);
+    const sid='s'+si; outSlates.push({id:sid,label,week:wk,date:g.date?fmtDate(g.date):null,est:g.est,hasTeams:!!(g.slate&&g.slate.hasTeams),hasProj:!!(g.slate&&g.slate.hasProj),showdown:contests[g.idx[0]].showdown});
     g.idx.forEach(i=>{ const c=contests[i], P=g.slate?g.slate.players:new Map(), N=c.rows.length; if(!N) return;
       const mine=c.rows.filter(r=>r.name===user); if(!mine.length) return;
       const own=n=>c.own.get(n)||0;
@@ -498,7 +513,7 @@ function render(){ lastW=$('report').clientWidth;
     S.forEach((x,i)=>{ const cx=cxs[i], top=Math.min(y(x.net),y(0)), bh=Math.max(2,Math.abs(y(x.net)-y(0)));
       const r=el('rect',{x:cx-bwd/2,y:top,width:bwd,height:bh,rx:3,fill:x.net>=0?'var(--pos)':'var(--neg)'},svg);
       tip(r,`<b>${esc(x.label)}</b><br>${x.n} entries · $${Math.round(x.f)} in fees<br>Won $${Math.round(x.w)} · net ${fmt$(x.net)}<br>Running total ${fmt$(x.cum)}`);
-      if(i%every===0){ txt(svg,cx,m.t+ih+m.b+14,w<480?x.label.replace('Week ','Wk '):x.label,'lab','middle'); if(n<=12){ const t=txt(svg,cx,m.t+ih+m.b+32,fmt$(x.net),'val','middle'); t.style.fill=x.net>=0?'var(--pos)':'var(--neg)'; t.style.fontWeight='600'; } } });
+      if(i%every===0){ txt(svg,cx,m.t+ih+m.b+14,(w<480?x.label.replace('Week ','Wk '):x.label).replace(/ · .*/,''),'lab','middle'); if(n<=12){ const t=txt(svg,cx,m.t+ih+m.b+32,fmt$(x.net),'val','middle'); t.style.fill=x.net>=0?'var(--pos)':'var(--neg)'; t.style.fontWeight='600'; } } });
     if(n>1){ el('polyline',{points:S.map((x,i)=>`${cxs[i]},${y(x.cum)}`).join(' '),fill:'none',stroke:'var(--ink)','stroke-width':2,'stroke-linejoin':'round'},svg);
       S.forEach((x,i)=>{ const d=el('circle',{cx:cxs[i],cy:y(x.cum),r:4,fill:'var(--surface)',stroke:'var(--ink)','stroke-width':2},svg); tip(d,`<b>Running total after ${esc(x.label)}</b><br>${fmt$(x.cum)}`); });
     }
@@ -597,7 +612,7 @@ function render(){ lastW=$('report').clientWidth;
         <div class="call-bars" aria-hidden="true"><span class="cb-l">You</span><span class="cb-t"><span class="cb you" style="width:${r.exp}%"></span></span><span class="cb-v">${r.exp.toFixed(0)}%</span><span class="cb-l">Field</span><span class="cb-t"><span class="cb fld" style="width:${r.fo}%"></span></span><span class="cb-v">${r.fo.toFixed(0)}%</span></div>
         <div class="call-sub">Scored ${r.fp.toFixed(1)} pts</div></li>`; };
       const card=document.createElement('div'); card.className='card call-card';
-      card.innerHTML=`<div class="call-h"><h3>${sl.week?'Week '+sl.week:esc(sl.label)}</h3><span class="dim" style="font-size:13.5px">${Ew.length} entr${Ew.length>1?'ies':'y'}</span></div>
+      card.innerHTML=`<div class="call-h"><h3>${sl.week?'Week '+sl.week:esc(sl.label)}</h3><span class="dim" style="font-size:13.5px">${sl.week&&sl.date?sl.date+' · ':''}${Ew.length} entr${Ew.length>1?'ies':'y'}</span></div>
         <div class="call-cols"><div><div class="call-k">Best plays <span>· you were heavier</span></div>${best.length?`<ul>${best.map(r=>item(r,true)).join('')}</ul>`:'<p class="dim call-none">No overweight play that paid off.</p>'}</div>
         <div><div class="call-k">Costly fades <span>· you were lighter</span></div>${fades.length?`<ul>${fades.map(r=>item(r,false)).join('')}</ul>`:'<p class="dim call-none">No fade that hurt.</p>'}</div></div>`;
       grid.appendChild(card); });
